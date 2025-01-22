@@ -6,6 +6,9 @@ const { SourceMapConsumer } = require('source-map');
 
 async function fetchAndRestructureSourceMap(mapUrl) {
     try {
+
+        const sourceUrl = new URL(mapUrl);
+        console.log(sourceUrl.hostname)
         // Fetch the source map file from the provided URL
         console.log(`Fetching source map from: ${mapUrl}`);
         const response = await fetch(mapUrl);
@@ -20,8 +23,7 @@ async function fetchAndRestructureSourceMap(mapUrl) {
             // Get the source content from the source map
             const sourceContent = consumer.sourceContentFor(source);
             if (sourceContent) {
-                
-                const sourceUrl = new URL(source, baseUrl);
+
                 // Normalize the source path
                 const normalizedSource = source.replace(/^webpack:\/\//, '').replace(/\.\.\//g, '');
                 const outputFilePath = path.join('./sources',sourceUrl.hostname, normalizedSource);

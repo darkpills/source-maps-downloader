@@ -20,9 +20,11 @@ async function fetchAndRestructureSourceMap(mapUrl) {
             // Get the source content from the source map
             const sourceContent = consumer.sourceContentFor(source);
             if (sourceContent) {
+                
+                const sourceUrl = new URL(source, baseUrl);
                 // Normalize the source path
                 const normalizedSource = source.replace(/^webpack:\/\//, '').replace(/\.\.\//g, '');
-                const outputFilePath = path.join('./output', normalizedSource);
+                const outputFilePath = path.join('./sources',sourceUrl.hostname, normalizedSource);
 
                 // Create directories recursively if they don't exist
                 fs.mkdirSync(path.dirname(outputFilePath), { recursive: true });

@@ -10,100 +10,139 @@ const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 function extractChunkReferences(jsContent, baseUrl) {
   const chunks = new Set();
   
-  // Pattern 1: Webpack chunk manifest - n.u = e => "path/" + ({id: "name"}[e]||e) + "." + {id: "hash"}[e] + ".chunk.js"
-  const chunkManifestPattern = /n\.u\s*=\s*e\s*=>\s*["']([^"']+)["']\s*\+\s*\(\{([^}]+)\}\[e\][^+]*\)\s*\+\s*["']([^"']*?)["']\s*\+\s*\{([^}]+)\}\[e\]\s*\+\s*["']([^"']+)["']/g;
+  // Pattern 1: Webpack/Dynamic chunk manifest - n.u = e => ... pattern
+  // Matches: n.u = e => "path/" + ({id:"name"}[e]||e) + "." + {id:"hash"}[e] + ".ext"
+  // Also matches simpler variants like: n.u = e => "path/" + e + ".hash.ext"
+  const dynamicChunkPattern = /(?:n\.u|[a-z]\.u|u)\s*=\s*(?:function\s*)?\(?e\)?\s*=>\s*{?[^}]*?["']([^"']+)["'][^}]*?}/g;
   
-  let manifestMatch;
-  while ((manifestMatch = chunkManifestPattern.exec(jsContent)) !== null) {
-    const basePath = manifestMatch[1]; // "static/js/"
-    const nameMap = manifestMatch[2]; // 102:"xlsx",133:"pdfmake"
-    const middlePart = manifestMatch[3]; // "."
-    const hashMap = manifestMatch[4]; // 13:"552027bd",59:"8a314126"
-    const extension = manifestMatch[5]; // ".chunk.js"
+  let dynamicMatch;
+  while ((dynamicMatch = dynamicChunkPattern.exec(jsContent)) !== null) {
+    const chunkDefinition = dynamicMatch[0];
     
-    // Parse the name map {102:"xlsx",133:"pdfmake"}
-    const nameMatches = nameMap.matchAll(/(\d+)\s*:\s*["']([^"']+)["']/g);
-    const names = {};
-    for (const match of nameMatches) {
-      names[match[1]] = match[2];
-    }
+    // Extract base path
+    const basePathMatch = chunkDefinition.match(/["']([^"']*\/[^"']*?)["']/);
+    let basePath = basePathMatch ? basePathMatch[1] : '';
     
-    // Parse the hash map {13:"552027bd",59:"8a314126"}
-    const hashMatches = hashMap.matchAll(/(\d+)\s*:\s*["']([^"']+)["']/g);
-    const hashes = {};
-    for (const match of hashMatches) {
-      hashes[match[1]] = match[2];
-    }
+    // Extract all object literals with id:value mappings
+    const objectLiterals = chunkDefinition.matchAll(/\{([^}]+)\}/g);
+    const allMappings = [];
     
-    // Generate all chunk URLs
-    const allIds = new Set([...Object.keys(names), ...Object.keys(hashes)]);
-    for (const id of allIds) {
-      const chunkName = names[id] || id;
-      const chunkHash = hashes[id];
+    for (const literal of objectLiterals) {
+      const content = literal[1];
+      const mappings = content.matchAll(/(\d+)\s*:\s*["']([^"']+)["']/g);
       
-      if (chunkHash) {
-        // Store relative path with leading slash to prevent doubling
-        const chunkPath = `/${basePath}${chunkName}${middlePart}${chunkHash}${extension}`;
-        chunks.add(chunkPath);
+      for (const mapping of mappings) {
+        allMappings.push({
+          id: mapping[1],
+          value: mapping[2]
+        });
       }
     }
-  }
-  
-  // Pattern 2: Alternative webpack format with CSS - n.miniCssF = e => "path/" + {id: "hash"}[e] + ".chunk.css"
-  const cssManifestPattern = /n\.miniCssF\s*=\s*e\s*=>\s*["']([^"']+)["']\s*\+\s*\{([^}]+)\}\[e\]\s*\+\s*["']([^"']+)["']/g;
-  
-  let cssMatch;
-  while ((cssMatch = cssManifestPattern.exec(jsContent)) !== null) {
-    const basePath = cssMatch[1];
-    const hashMap = cssMatch[2];
-    const extension = cssMatch[3];
     
-    const hashMatches = hashMap.matchAll(/(\d+)\s*:\s*["']([^"']+)["']/g);
-    for (const match of hashMatches) {
-      const id = match[1];
-      const hash = match[2];
-      const chunkPath = `/${basePath}${id}.${hash}${extension}`;
-      // Note: CSS chunks, but keeping for completeness
+    // Group by ID to combine name and hash
+    const chunksById = {};
+    for (const mapping of allMappings) {
+      if (!chunksById[mapping.id]) {
+        chunksById[mapping.id] = {};
+      }
+      // Determine if this is a name or hash based on content
+      if (mapping.value.length <= 10 && /^[a-f0-9]+$/i.test(mapping.value)) {
+        chunksById[mapping.id].hash = mapping.value;
+      } else {
+        chunksById[mapping.id].name = mapping.value;
+      }
+    }
+    
+    // Extract extension from the pattern
+    const extensionMatch = chunkDefinition.match(/["'](\.chunk\.js|\.js|\.mjs)["']/);
+    const extension = extensionMatch ? extensionMatch[1] : '.chunk.js';
+    
+    // Build chunk URLs
+    for (const [id, data] of Object.entries(chunksById)) {
+      const name = data.name || id;
+      const hash = data.hash || '';
+      
+      let chunkPath;
+      if (hash) {
+        chunkPath = `/${basePath}${name}.${hash}${extension}`;
+      } else {
+        chunkPath = `/${basePath}${name}${extension}`;
+      }
+      
+      chunks.add(chunkPath);
     }
   }
   
-  // Pattern 3: Standard chunk patterns (fallback)
-  const patterns = [
-    // Webpack chunk loading: __webpack_require__.e, "chunkId":"filename"
-    /"([^"]+\.chunk\.js)"/g,
-    /'([^']+\.chunk\.js)'/g,
-    // React/Vite chunks: import("./chunk-xxx.js")
-    /import\(["']([^"']+\.js)["']\)/g,
-    // Webpack manifest: {123:"chunk-name.js"}
-    /["']([a-zA-Z0-9_-]+\.js)["']/g,
-    // Static imports
-    /src=["']([^"']+\.js)["']/g,
-    /href=["']([^"']+\.js)["']/g,
-    // Dynamic chunk patterns
-    /\+["']([^"']+\.js)["']/g,
-    // Webpack public path + chunk
-    /\{[0-9]+:["']([^"']+\.js)["']\}/g,
+  // Pattern 2: CSS chunk manifest
+  const cssPattern = /(?:miniCssF|cssF)\s*=\s*(?:function\s*)?\(?e\)?\s*=>\s*{?[^}]*?["']([^"']+)["'][^}]*?}/g;
+  
+  let cssMatch;
+  while ((cssMatch = cssPattern.exec(jsContent)) !== null) {
+    const cssDefinition = cssMatch[0];
+    
+    const basePathMatch = cssDefinition.match(/["']([^"']*\/[^"']*?)["']/);
+    const basePath = basePathMatch ? basePathMatch[1] : '';
+    
+    const mappings = cssDefinition.matchAll(/(\d+)\s*:\s*["']([^"']+)["']/g);
+    
+    for (const mapping of mappings) {
+      const id = mapping[1];
+      const hash = mapping[2];
+      const chunkPath = `/${basePath}${id}.${hash}.chunk.css`;
+      // CSS chunks noted but not added to JS chunks
+    }
+  }
+  
+  // Pattern 3: Direct string references to chunk files
+  const directPatterns = [
+    // Quoted chunk references
+    /["']([^"']*?\.chunk\.js)["']/g,
+    /["']([^"']*?\/\d+\.[a-f0-9]+\.chunk\.js)["']/g,
+    // Import statements
+    /import\s*\(\s*["']([^"']+\.js)["']\s*\)/g,
+    // Webpack require
+    /__webpack_require__\.e\([^)]*\)\.then[^"']*["']([^"']+)["']/g,
   ];
-
-  for (const pattern of patterns) {
+  
+  for (const pattern of directPatterns) {
     let match;
     while ((match = pattern.exec(jsContent)) !== null) {
       let chunkPath = match[1];
-      // Skip data URIs and external URLs
-      if (chunkPath.startsWith('data:') || chunkPath.startsWith('http://') || chunkPath.startsWith('https://')) {
+      
+      // Skip external URLs and data URIs
+      if (chunkPath.startsWith('data:') || 
+          chunkPath.startsWith('http://') || 
+          chunkPath.startsWith('https://') ||
+          chunkPath.startsWith('//')) {
         continue;
       }
-      // Add leading slash if not present to ensure proper URL resolution
+      
+      // Skip if it's just a variable or doesn't look like a real path
+      if (!chunkPath.includes('/') && !chunkPath.match(/\d+\.[a-f0-9]+\.chunk\.js/)) {
+        continue;
+      }
+      
+      // Ensure leading slash for absolute resolution
       if (!chunkPath.startsWith('/')) {
         chunkPath = '/' + chunkPath;
       }
+      
       chunks.add(chunkPath);
     }
+  }
+  
+  // Pattern 4: Numeric references that might be chunk IDs
+  // Look for patterns like: 123:"hash" or {123:"filename"}
+  const chunkIdPattern = /["'](static\/js\/|assets\/|js\/|chunks\/)?(\d+)\.([a-f0-9]{8,})\.chunk\.js["']/g;
+  
+  let idMatch;
+  while ((idMatch = chunkIdPattern.exec(jsContent)) !== null) {
+    const fullPath = idMatch[0].replace(/["']/g, '');
+    chunks.add('/' + fullPath);
   }
 
   return Array.from(chunks);
 }
-
 // Find main/runtime JS files that likely contain the chunk manifest
 async function findMainJsFiles(page, baseUrl) {
   const scriptUrls = await page.evaluate(() => {

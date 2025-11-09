@@ -1,19 +1,34 @@
 const fs = require('fs');
 const path = require('path');
-const fetch = require('axios');
+const axios = require('axios');
 const readline = require('readline');
 const { SourceMapConsumer } = require('source-map');
 
-async function fetchAndRestructureSourceMap(mapUrl) {
+/**
+ * Process a source map from either a URL or a local file path
+ * @param {string} input - URL or file path to the source map
+ */
+async function processSourceMap(input) {
     try {
+        let mapContent;
+        let hostname = 'local';
 
-        const sourceUrl = new URL(mapUrl);
-        console.log(sourceUrl.hostname)
-        // Fetch the source map file from the provided URL
-        console.log(`Fetching source map from: ${mapUrl}`);
-        const response = await fetch(mapUrl);
-        
-        const mapContent = await response.data;
+        // Check if input is a URL or a file path
+        if (input.startsWith('http://') || input.startsWith('https://')) {
+            // Handle URL input
+            console.log(`Fetching source map from URL: ${input}`);
+            const sourceUrl = new URL(input);
+            hostname = sourceUrl.hostname;
+            const response = await axios.get(input);
+            mapContent = response.data;
+        } else {
+            // Handle file path input
+            console.log(`Reading source map from file: ${input}`);
+            const absolutePath = path.resolve(input);
+            mapContent = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
+        }
+
+        // Process the source map
         const consumer = await new SourceMapConsumer(mapContent);
 
         // Process and save each source file
@@ -22,11 +37,11 @@ async function fetchAndRestructureSourceMap(mapUrl) {
 
             // Get the source content from the source map
             const sourceContent = consumer.sourceContentFor(source);
+            console.log({sourceContent})
             if (sourceContent) {
-
                 // Normalize the source path
                 const normalizedSource = source.replace(/^webpack:\/\//, '').replace(/\.\.\//g, '');
-                const outputFilePath = path.join('./sources',sourceUrl.hostname, normalizedSource);
+                const outputFilePath = path.join('./sources', hostname, normalizedSource);
 
                 // Create directories recursively if they don't exist
                 fs.mkdirSync(path.dirname(outputFilePath), { recursive: true });
@@ -44,20 +59,20 @@ async function fetchAndRestructureSourceMap(mapUrl) {
     }
 }
 
-function askUserForUrl() {
+function askUserForInput() {
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
     });
 
-    rl.question('Enter the URL of the source map: ', (url) => {
-        if (!url) {
-            console.error('No URL provided. Exiting...');
+    rl.question('Enter the URL or file path of the source map: ', (input) => {
+        if (!input) {
+            console.error('No input provided. Exiting...');
             rl.close();
             return;
         }
 
-        fetchAndRestructureSourceMap(url)
+        processSourceMap(input)
             .then(() => rl.close())
             .catch((error) => {
                 console.error(`Failed to process the source map: ${error.message}`);
@@ -66,5 +81,5 @@ function askUserForUrl() {
     });
 }
 
-// Start the process by asking for the URL
-askUserForUrl();
+// Start the process by asking for input
+askUserForInput();

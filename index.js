@@ -300,13 +300,14 @@ async function downloadSourceMaps(websiteUrl, shouldRecord) {
     // Find main/runtime JS files
     console.log('\nFinding main JS files...');
     const mainJsFiles = await findMainJsFiles(page, baseUrl);
-    
+    //add mainJsFiles to networkJsFiles
+    mainJsFiles.forEach(url => networkJsFiles.add(url));
     // Parse main files to find all chunks
     const allChunks = new Set();
     const parsedFiles = [];
     
     console.log('\nParsing main JS files for chunk references...');
-    for (const jsUrl of mainJsFiles.slice(0, 10)) { // Check top 10 files
+    for (const jsUrl of mainJsFiles) { // Check top 10 files
       const parsed = await parseJsForChunks(jsUrl, baseUrl);
       parsedFiles.push(parsed);
       parsed.chunks.forEach(chunk => allChunks.add(chunk));

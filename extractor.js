@@ -14,6 +14,9 @@ async function extractChunkReferences(content) {
   // Pattern 4: Simple object with extension - u=e=>({...}[e]+"ext")
   const pattern4 = /\.u\s*=\s*e\s*=>\s*\(?(\{[^}]+\})\[e\]\s*\+\s*"([^"]+)"\)?/;
 
+  // Pattern 5: "static/js/"+({...}[e]||e)+"."+{...}[e]+".chunk.js"
+  const pattern5 = /"([^"]+)"\s*\+\s*\(\s*(\{[^}]+\})\[e\]\s*\|\|\s*e\s*\)\s*\+\s*"([^"]*)"\s*\+\s*(\{[^}]+\})\[e\]\s*\+\s*"([^"]+)"/;
+
   let match;
   let patternType;
 
@@ -33,6 +36,10 @@ async function extractChunkReferences(content) {
     patternType = 4;
     console.log('Matched Pattern 4: Direct hash + extension');
     return parsePattern4(match, chunks);
+  }else if ((match = content.match(pattern5))) {
+    patternType = 5;
+    console.log('Matched Pattern 5: Names with fallback + hashes pattern');
+    return parsePattern5(match, chunks);
   } else {
     console.log('No known pattern matched');
     
@@ -126,6 +133,24 @@ function parsePattern4(match, chunks) {
 
   return { chunks };
 }
+function parsePattern5(match, chunks) {
+  // Pattern: "static/js/"+({...}[e]||e)+"."+{...}[e]+".chunk.js"
+  const [, basePath, namesObjStr, midStr, hashesObjStr, extension] = match;
+
+  const nameMap = parseObject(namesObjStr);
+  const hashMap = parseObject(hashesObjStr);
+  const allIds = new Set([...Object.keys(nameMap), ...Object.keys(hashMap)]);
+
+  for (const id of allIds) {
+    const name = nameMap[id] || id;
+    const hash = hashMap[id] || '';
+    const chunkPath = `/${basePath}${name}${midStr}${hash}${extension}`;
+    chunks.add(chunkPath);
+  }
+
+  return chunks;
+}
+
 
 function parseGeneric(assignment, chunks) {
   // Extract all objects from the assignment

@@ -32,40 +32,6 @@ async function findMainJsFiles(page, baseUrl) {
   return sortedScripts;
 }
 
-// Download and parse JS file to find chunk references
-async function parseJsForChunks(jsUrl, baseUrl) {
-  try {
-    console.log(`Parsing JS file: ${jsUrl}`);
-    const response = await axios.get(jsUrl, { 
-      timeout: 30000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    const content = response.data;
-    const chunks = await extractChunkReferences(content);
-    
-    console.log(`  Found ${chunks.size} potential chunks in ${jsUrl}`);
-    
-  const resolvedChunks = Array.from(chunks)
-  .map(chunk => {
-    try {
-      return new URL(chunk, jsUrl).toString();
-    } catch (e) {
-      console.warn(`  Could not resolve chunk URL: ${chunk}`);
-      return null;
-    }
-  })
-  .filter(Boolean);
-
-    
-    return { url: jsUrl, content, chunks: resolvedChunks };
-  } catch (error) {
-    console.error(`  Error parsing ${jsUrl}: ${error.message}`);
-    return { url: jsUrl, content: '', chunks: [] };
-  }
-}
 
 // Process a single JS file and extract its source map
 async function processJsFile(jsUrl, baseUrl, outputDir) {
@@ -77,7 +43,7 @@ async function processJsFile(jsUrl, baseUrl, outputDir) {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
-    
+      
     const content = response.data;
     
     // Look for source map reference
@@ -147,6 +113,41 @@ async function processJsFile(jsUrl, baseUrl, outputDir) {
   }
 }
 
+// Download and parse JS file to find chunk references
+async function parseJsForChunks(jsUrl, baseUrl) {
+  try {
+    console.log(`Parsing JS file: ${jsUrl}`);
+    const response = await axios.get(jsUrl, { 
+      timeout: 30000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const content = response.data;
+    const chunks = await extractChunkReferences(content);
+    
+    console.log(`  Found ${chunks.size} potential chunks in ${jsUrl}`);
+    
+    
+    const resolvedChunks = Array.from(chunks)
+    .map(chunk => {
+      try {
+        return new URL(chunk, jsUrl).toString();
+      } catch (e) {
+        console.warn(`  Could not resolve chunk URL: ${chunk}`);
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+    return { url: jsUrl, content, chunks: resolvedChunks };
+  } catch (error) {
+    console.error(`  Error parsing ${jsUrl}: ${error.message}`);
+    return { url: jsUrl, content: '', chunks: [] };
+  }
+}
+
 async function downloadSourceMaps(websiteUrl, shouldRecord) {
   try {
     const baseUrl = new URL(websiteUrl);
@@ -155,7 +156,10 @@ async function downloadSourceMaps(websiteUrl, shouldRecord) {
     console.log('Starting browser...');
     const browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--proxy-server=http://127.0.0.1:8080',
+        '--ignore-certificate-errors',
+        '--ignore-certificate-errors-spki-list'
+      ]
     });
     const page = await browser.newPage();
     
@@ -212,17 +216,36 @@ async function downloadSourceMaps(websiteUrl, shouldRecord) {
     // Find main/runtime JS files
     console.log('\nFinding main JS files...');
     const mainJsFiles = await findMainJsFiles(page, baseUrl);
-    //add mainJsFiles to networkJsFiles
+    // add initial mainJsFiles to networkJsFiles
     mainJsFiles.forEach(url => networkJsFiles.add(url));
-    // Parse main files to find all chunks
+
+    // Parse main files to find all chunks using a queue (while loop)
+    // This allows pushing new discovered chunk URLs into `mainJsFiles`
+    // and have them processed in FIFO order.
     const allChunks = new Set();
     const parsedFiles = [];
-    
-    console.log('\nParsing main JS files for chunk references...');
-    for (const jsUrl of mainJsFiles) { // Check top 10 files
-      const parsed = await parseJsForChunks(jsUrl, baseUrl);
-      parsedFiles.push(parsed);
-      parsed.chunks.forEach(chunk => allChunks.add(chunk));
+
+    console.log('\nParsing main JS files for chunk references (queue)...');
+
+    let idx = 0;
+    while (idx < mainJsFiles.length) {
+      const jsUrl = mainJsFiles[idx++];
+      try {
+        const parsed = await parseJsForChunks(jsUrl, baseUrl);
+        parsedFiles.push(parsed);
+
+        // For each discovered chunk, add to allChunks and enqueue it for processing
+        for (const chunk of parsed.chunks) {
+          if (!allChunks.has(chunk)) {
+            allChunks.add(chunk);
+            // Enqueue the discovered chunk so it will be parsed as well
+            // This preserves FIFO behavior and allows discovery to grow the queue
+            mainJsFiles.push(chunk);
+          }
+        }
+      } catch (err) {
+        console.warn(`  Error parsing ${jsUrl}: ${err && err.message ? err.message : err}`);
+      }
     }
     
     // Also add all network JS files

@@ -1,5 +1,5 @@
-
 async function extractChunkReferences(content) {
+
   const chunks = new Set();
 
   // Pattern 1: n.u=e=>"static/js/"+({...}[e]||e)+"."+{...}[e]+".chunk.js"
@@ -16,6 +16,9 @@ async function extractChunkReferences(content) {
 
   // Pattern 5: "static/js/"+({...}[e]||e)+"."+{...}[e]+".chunk.js"
   const pattern5 = /"([^"]+)"\s*\+\s*\(\s*(\{[^}]+\})\[e\]\s*\|\|\s*e\s*\)\s*\+\s*"([^"]*)"\s*\+\s*(\{[^}]+\})\[e\]\s*\+\s*"([^"]+)"/;
+
+  // Pattern 6: from"./chunk-CRJ4HZPK.js"
+  const pattern6 = /(from|import)"([^"]+)chunk-([^/"]+).js"/g;
 
   let match;
   let patternType;
@@ -40,6 +43,10 @@ async function extractChunkReferences(content) {
     patternType = 5;
     console.log('Matched Pattern 5: Names with fallback + hashes pattern');
     return parsePattern5(match, chunks);
+  }else if ((match = content.match(pattern6))) {
+    patternType = 6;
+    console.log('Matched Pattern 6: From and import');
+    return await parsePattern6(match, chunks);
   } else {
     console.log('No known pattern matched');
     
@@ -145,6 +152,17 @@ function parsePattern5(match, chunks) {
     const name = nameMap[id] || id;
     const hash = hashMap[id] || '';
     const chunkPath = `/${basePath}${name}${midStr}${hash}${extension}`;
+    chunks.add(chunkPath);
+  }
+
+  return chunks;
+}
+async function parsePattern6(matches, chunks) {
+  // Pattern: import|from"./chunk-CRJ4HZPK.js"
+  const pattern6 = /(from|import)"([^"]+)chunk-([^/"]+).js"/;
+  for (const match of matches) {
+    const [, importType, basePath, hash] = match.match(pattern6);
+    const chunkPath = `${basePath}chunk-${hash}.js`;
     chunks.add(chunkPath);
   }
 
